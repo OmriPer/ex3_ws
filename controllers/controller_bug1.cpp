@@ -1,4 +1,5 @@
 #include "controller_bug1.hpp"
+#include <limits>
 
 namespace argos {
    
@@ -23,13 +24,98 @@ namespace argos {
       GetNodeAttribute(tTargetNode, "y", targetY);
       m_cTargetPosition.Set(targetX, targetY, 0.0);
 
-      /* your Init code here */
+      // Initialize Bug1 algorithm variables
+      m_eState = EBug1State::ALIGN_TO_TARGET;
+      m_fBestDist = std::numeric_limits<Real>::max();
+      m_bCompletedLoop = false;
+      m_cHitPoint.Set(0.0, 0.0);
+      m_cBestPoint.Set(0.0, 0.0);
    }
    
    void ControllerBug1::ControlStep() {
+
       /* your ControlStep code here */
+      switch(m_eState) {
+         case EBug1State::ALIGN_TO_TARGET:
+            AlignToTarget();
+            break;
+         case EBug1State::MOVE_STRAIGHT:
+            MoveStraight();
+            break;
+         // case EBug1State::FOLLOW_OBSTACLE:
+         //    break;
+         // case EBug1State::GO_TO_BEST_POINT:
+         //    break;
+         case EBug1State::FINISHED:
+            m_pcWheels->SetLinearVelocity(0.0, 0.0);
+            m_pcColoredLEDs->SetAllColors(CColor::GREEN);
+            break;
+      }
+   }
+   void ControllerBug1::AlignToTarget() {
+
+      m_pcColoredLEDs->SetAllColors(CColor::BLUE);
+
+      CVector3 currentPos = m_pcPositioning->GetReading().Position;
+      CVector2 cPos(currentPos.GetX(), currentPos.GetY());
+      CVector2 cTarget(m_cTargetPosition.GetX(), m_cTargetPosition.GetY());
+      CVector2 toTarget = cTarget - cPos;
+
+      CRadians cAngleError = toTarget.Angle();
+      cAngleError.SignedNormalize();
+
+      const Real fThreshold = 0.05; 
+
+      if(Abs(cAngleError.GetValue()) > fThreshold) {
+         m_pcWheels->SetLinearVelocity(-0.05, 0.05);
+      } else {
+         m_eState = EBug1State::MOVE_STRAIGHT;
+      }
+}
+
+   bool ControllerBug1::IsObstacleAhead(){
+      const Real OBSTACLE_THRESHOLD = 0.2; 
+
+      for(const auto& reading : m_pcRangefinders->GetReadings()) {
+         if(reading.Value < OBSTACLE_THRESHOLD) {
+            return true;
+         }
+      }
+      return false;
    }
 
+   void ControllerBug1::MoveStraight(){
+
+      m_pcColoredLEDs->SetAllColors(CColor::BLUE);
+
+      if(IsObstacleAhead()) {
+         CVector3 currentPos = m_pcPositioning->GetReading().Position;
+         m_cHitPoint.Set(currentPos.GetX(), currentPos.GetY()); // to remeber when a loop is completed
+
+         // initialize bug1 variables
+         CVector2 cTarget(m_cTargetPosition.GetX(), m_cTargetPosition.GetY());
+         CVector2 cPos(currentPos.GetX(), currentPos.GetY());
+
+         m_cBestPoint = cPos;
+         m_fBestDist = (cTarget - cPos).Length();
+         m_bCompletedLoop = false
+         // m_eState = EBug1State::FOLLOW_OBSTACLE;
+         return;
+      } else {
+      m_pcWheels->SetLinearVelocity(0.5, 0.5);
+
+   }
+}
+
+   void ControllerBug1::FollowObstacle(){
+
+      m_pcColoredLEDs->SetAllColors(CColor::YELLOW);
+     
+   }
+
+
+
+   /****************************************/
    /****************************************/
    /****************************************/
    

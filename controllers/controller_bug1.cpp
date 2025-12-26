@@ -1,207 +1,164 @@
 #include "controller_bug1.hpp"
 #include <limits>
+#include <algorithm>
 
 namespace argos {
-   
-   /****************************************/
-   /****************************************/
-   
+
    void ControllerBug1::Init(TConfigurationNode& t_tree) {
-      /* Get the actuators and sensors */
+      /* Actuators and Sensors */
       m_pcWheels = GetActuator<CCI_PiPuckDifferentialDriveActuator>("pipuck_differential_drive");
-      m_pcColoredLEDs = GetActuator<CCI_PiPuckColorLEDsActuator>("pipuck_leds");
-      m_pcSystem = GetSensor<CCI_PiPuckSystemSensor>("pipuck_system");
-      m_pcCamera = GetSensor<CCI_ColoredBlobOmnidirectionalCameraSensor>("colored_blob_omnidirectional_camera");
-      m_pcCamera->Enable();
-      m_pcRangefinders = GetSensor<CCI_PiPuckRangefindersSensor>("pipuck_rangefinders");
       m_pcPositioning = GetSensor<CCI_PositioningSensor>("positioning");
       m_pcPositioning->Enable();
-      
-      // read target position from .argos file into m_cTargetPosition
+      m_pcRangefinders = GetSensor<CCI_PiPuckRangefindersSensor>("pipuck_rangefinders");
+      m_pcCamera = GetSensor<CCI_ColoredBlobOmnidirectionalCameraSensor>("colored_blob_omnidirectional_camera");
+      m_pcCamera->Enable();
+
+      /* Target Position from XML */
       TConfigurationNode& tTargetNode = GetNode(t_tree, "target_position");
       Real targetX, targetY;
       GetNodeAttribute(tTargetNode, "x", targetX);
       GetNodeAttribute(tTargetNode, "y", targetY);
       m_cTargetPosition.Set(targetX, targetY, 0.0);
 
-      // Initialize Bug1 algorithm variables
+      /* Variables Initialization */
       m_eState = EBug1State::ALIGN_TO_TARGET;
       m_fBestDist = std::numeric_limits<Real>::max();
       m_bCompletedLoop = false;
-      m_cHitPoint.Set(0.0, 0.0);
-      m_cBestPoint.Set(0.0, 0.0);
+      m_nStepsInFollow = 0;
+      threshold_distance = 0.1; // סף זווית מעט יותר גמיש כדי להבטיח תחילת נסיעה
    }
-   
-   void ControllerBug1::ControlStep() {
 
-      /* your ControlStep code here */
+   void ControllerBug1::ControlStep() {
+      // הדפסת המצב הנוכחי ללוג כדי שנדע איפה הוא תקוע
+      LOG << "Current State: " << (int)m_eState << std::endl;
+
       switch(m_eState) {
-         case EBug1State::ALIGN_TO_TARGET:
-            AlignToTarget();
-            break;
-         case EBug1State::MOVE_STRAIGHT:
-            MoveStraight();
-            break;
-         case EBug1State::FOLLOW_OBSTACLE:
-            FollowObstacle();
-            break;
-         case EBug1State::GO_TO_BEST_POINT:
-            GoToBestPoint();
-            break;
-         case EBug1State::FINISHED:
-            m_pcWheels->SetLinearVelocity(0.0, 0.0);
-            break;
+         case EBug1State::ALIGN_TO_TARGET:  AlignToTarget();  break;
+         case EBug1State::MOVE_STRAIGHT:    MoveStraight();    break;
+         case EBug1State::FOLLOW_OBSTACLE:  FollowObstacle();  break;
+         case EBug1State::GO_TO_BEST_POINT: GoToBestPoint(); break;
+         case EBug1State::FINISHED:         m_pcWheels->SetLinearVelocity(0,0); break;
       }
    }
-void ControllerBug1::AlignToTarget() {
 
-   // current position
-   CVector3 currentPos = m_pcPositioning->GetReading().Position;
-   CVector2 cPos(currentPos.GetX(), currentPos.GetY());
+   void ControllerBug1::AlignToTarget() {
+      if(IsTargetReached()) { m_eState = EBug1State::FINISHED; return; }
 
-   // target position
-   CVector2 cTarget(m_cTargetPosition.GetX(), m_cTargetPosition.GetY());
-   CVector2 toTarget = cTarget - cPos;
+      CVector2 cPos(m_pcPositioning->GetReading().Position.GetX(), m_pcPositioning->GetReading().Position.GetY());
+      CVector2 cTarget(m_cTargetPosition.GetX(), m_cTargetPosition.GetY());
+      CVector2 toTarget = cTarget - cPos;
 
-   
-   CRadians cZ, cY, cX;
-   m_pcPositioning->GetReading().Orientation.ToEulerAngles(cZ, cY, cX);
-   cZ.UnsignedNormalize();
+      CRadians cZ, cY, cX;
+      m_pcPositioning->GetReading().Orientation.ToEulerAngles(cZ, cY, cX);
+      cZ.UnsignedNormalize();
+      CRadians target_angle = ATan2(toTarget.GetY(), toTarget.GetX());
+      target_angle.UnsignedNormalize();
 
-   // target direction angle
-   CRadians target_angle = ATan2(toTarget.GetY(), toTarget.GetX());
+      // חישוב שגיאת זווית בצורה חכמה
+      Real fAngleError = (target_angle - cZ).SignedNormalize().GetValue();
 
-   // angle error
-   CRadians cAngleError = target_angle - cZ;
-   cAngleError.SignedNormalize();
-
-   const Real fThreshold = 0.05;
-
-   if(Abs(cAngleError.GetValue()) > fThreshold) {
-      m_pcWheels->SetLinearVelocity(-0.05, 0.05);
-   } else {
-      m_eState = EBug1State::MOVE_STRAIGHT;
+      if(Abs(fAngleError) > threshold_distance) {
+         // סיבוב על המקום כמו ב-Bug2
+         if(fAngleError > 0) m_pcWheels->SetLinearVelocity(-0.05, 0.05);
+         else m_pcWheels->SetLinearVelocity(0.05, -0.05);
+      } else {
+         LOG << "Aligned! Moving Straight..." << std::endl;
+         m_eState = EBug1State::MOVE_STRAIGHT;
+      }
    }
-}
 
-   bool ControllerBug1::IsObstacleAhead(){
-      const Real OBSTACLE_THRESHOLD = 0.2; 
+   void ControllerBug1::MoveStraight() {
+      if(IsTargetReached()) { m_eState = EBug1State::FINISHED; return; }
 
-    for(const auto& it : m_pcRangefinders->GetReadingsMap()) {
-   if(it.second.Value < OBSTACLE_THRESHOLD) {
-      return true;
+      if(isObstacleDetected()) {
+         LOG << "Obstacle Detected! Entering Follow State." << std::endl;
+         CVector2 cPos(m_pcPositioning->GetReading().Position.GetX(), m_pcPositioning->GetReading().Position.GetY());
+         CVector2 cTarget(m_cTargetPosition.GetX(), m_cTargetPosition.GetY());
+         
+         m_cHitPoint = cPos;
+         m_cBestPoint = cPos;
+         m_fBestDist = (cTarget - cPos).Length();
+         m_nStepsInFollow = 0;
+         m_bCompletedLoop = false;
+         m_eState = EBug1State::FOLLOW_OBSTACLE;
+      } else {
+         m_pcWheels->SetLinearVelocity(0.1, 0.1); // מהירות נסיעה קבועה
+      }
    }
-}
 
+   void ControllerBug1::FollowObstacle() {
+      m_nStepsInFollow++;
+      CVector2 cPos(m_pcPositioning->GetReading().Position.GetX(), m_pcPositioning->GetReading().Position.GetY());
+      CVector2 cTarget(m_cTargetPosition.GetX(), m_cTargetPosition.GetY());
+
+      // עדכון הנקודה הטובה ביותר (הקרובה ביותר ליעד)
+      Real d = (cTarget - cPos).Length();
+      if(d < m_fBestDist) {
+         m_fBestDist = d;
+         m_cBestPoint = cPos;
+      }
+
+      // לוגיקת עקיבת קיר בדיוק כמו ב-Bug2 שלך
+      if (isObstacleDetected()) {
+         m_pcWheels->SetLinearVelocity(-0.05, 0.05); // פנייה ימינה (מכשול מלפנים)
+      } else if (obstacleToMyLeft()) {
+         m_pcWheels->SetLinearVelocity(0.1, 0.1);    // נסיעה קדימה (קיר משמאל)
+      } else {
+         m_pcWheels->SetLinearVelocity(0.05, 0.1);   // חיפוש קיר (פנייה שמאלה)
+      }
+
+      // בדיקת השלמת סיבוב מלא (חזרה ל-HitPoint)
+      if(m_nStepsInFollow > 200 && (cPos - m_cHitPoint).Length() < 0.1) {
+         LOG << "Loop Completed! Going to Best Point." << std::endl;
+         m_eState = EBug1State::GO_TO_BEST_POINT;
+      }
+   }
+
+   void ControllerBug1::GoToBestPoint() {
+      CVector2 cPos(m_pcPositioning->GetReading().Position.GetX(), m_pcPositioning->GetReading().Position.GetY());
+      
+      // ממשיך לעקוב אחרי המכשול עד שמגיע לנקודה הכי טובה
+      if((cPos - m_cBestPoint).Length() < 0.08) {
+         LOG << "At Best Point! Re-aligning to Target." << std::endl;
+         m_eState = EBug1State::ALIGN_TO_TARGET;
+      } else {
+         if (isObstacleDetected()) m_pcWheels->SetLinearVelocity(-0.05, 0.05);
+         else if (obstacleToMyLeft()) m_pcWheels->SetLinearVelocity(0.1, 0.1);
+         else m_pcWheels->SetLinearVelocity(0.05, 0.1);
+      }
+   }
+
+   /* Sensing Logic - Using thresholds instead of raw range for stability */
+   bool ControllerBug1::isObstacleDetected() {
+      bool detected = false;
+      m_pcRangefinders->Visit([&detected](const auto& sensor) {
+         if (sensor.Label == 0 || sensor.Label == 7) {
+            // אם הפרוקסימיטי מעל 0.1, יש מכשול מלפנים
+            if (sensor.Proximity > 0.1) detected = true;
+         }
+      });
+      return detected;
+   }
+
+   bool ControllerBug1::obstacleToMyLeft() {
+      bool detected = false;
+      m_pcRangefinders->Visit([&detected](const auto& sensor) {
+         if (sensor.Label == 5 || sensor.Label == 6) {
+            // אם הפרוקסימיטי מעל 0.1, יש קיר משמאל
+            if (sensor.Proximity > 0.1) detected = true;
+         }
+      });
+      return detected;
+   }
+
+   bool ControllerBug1::IsTargetReached() {
+      // בדיקת יעד באמצעות המצלמה כמו ב-Bug2 שלך
+      const auto& blobs = m_pcCamera->GetReadings();
+      for (const auto& blob : blobs.BlobList) {
+         if (blob->Color == CColor::CYAN) return true;
+      }
       return false;
    }
 
-   void ControllerBug1::MoveStraight(){
-
-
-      if(IsObstacleAhead()) {
-         CVector3 currentPos = m_pcPositioning->GetReading().Position;
-         m_cHitPoint.Set(currentPos.GetX(), currentPos.GetY()); // to remeber when a loop is completed
-
-         // initialize bug1 variables
-         CVector2 cTarget(m_cTargetPosition.GetX(), m_cTargetPosition.GetY());
-         CVector2 cPos(currentPos.GetX(), currentPos.GetY());
-
-         m_cBestPoint = cPos;
-         m_fBestDist = (cTarget - cPos).Length();
-         m_bCompletedLoop = false;
-         m_eState = EBug1State::FOLLOW_OBSTACLE;
-         return;
-      } else {
-      m_pcWheels->SetLinearVelocity(0.5, 0.5);
-
-   }
-}
-
-void ControllerBug1::FollowObstacle(){
-
-   const Real fLinearSpeed = 0.4;
-   const Real fTurnSpeed   = 0.3;
-
-   const auto& readings = m_pcRangefinders->GetReadingsMap();
-
-   Real minDist = 1.0;
-
-   for(const auto& it : readings) {
-      minDist = Min(minDist, it.second.Value);
-   }
-
-   if(minDist < 0.15) {
-      m_pcWheels->SetLinearVelocity(fLinearSpeed,
-                                    fLinearSpeed + fTurnSpeed);
-   } else {
-      m_pcWheels->SetLinearVelocity(fLinearSpeed + fTurnSpeed,
-                                    fLinearSpeed);
-   }
-
-
-   CVector3 currentPos3D = m_pcPositioning->GetReading().Position;
-   CVector2 cPos(currentPos3D.GetX(), currentPos3D.GetY());
-
-   CVector2 cTarget(m_cTargetPosition.GetX(),
-                    m_cTargetPosition.GetY());
-
-   Real currentDist = (cTarget - cPos).Length();
-
-   if(currentDist < m_fBestDist) {
-      m_fBestDist = currentDist;
-      m_cBestPoint = cPos;
-   }
-
-   if((cPos - m_cHitPoint).Length() < 0.1 && !m_bCompletedLoop) {
-      m_bCompletedLoop = true;
-      m_eState = EBug1State::GO_TO_BEST_POINT;
-   }
-}
-void ControllerBug1::GoToBestPoint(){
-
-
-   CVector3 currentPos3D = m_pcPositioning->GetReading().Position;
-   CVector2 cPos(currentPos3D.GetX(), currentPos3D.GetY());
-
-   CVector2 toBest = m_cBestPoint - cPos;
-
-   CRadians cZ, cY, cX;
-   m_pcPositioning->GetReading().Orientation.ToEulerAngles(cZ, cY, cX);
-   cZ.UnsignedNormalize();
-
-   Real line_angle = ATan2(toBest.GetY(), toBest.GetX());
-   CRadians target_angle = CRadians(line_angle);
-
-   CRadians angle_error = target_angle - cZ;
-   angle_error.SignedNormalize();
-
-   Real fAngular = fAngularGain * angle_error.GetValue();
-
-
-   const Real fAngularGain = 2.0;
-   const Real fLinearSpeed = 0.4;
-
-
-
-   m_pcWheels->SetLinearVelocity(
-      fLinearSpeed - fAngular,
-      fLinearSpeed + fAngular
-   );
-
-   if(toBest.Length() < 0.05) {
-      m_eState = EBug1State::ALIGN_TO_TARGET;
-   }
-}
-
-
-
-
-
-   /****************************************/
-   /****************************************/
-   /****************************************/
-   
    REGISTER_CONTROLLER(ControllerBug1, "controller_bug1");
-   
 }

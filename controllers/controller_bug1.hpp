@@ -19,7 +19,7 @@ namespace argos {
       virtual void ControlStep() override;
 
    private:
-      /* מצבים */
+      // states
       enum EState {
           STATE_GO_TO_GOAL = 0,
           STATE_FOLLOW_OBSTACLE,
@@ -27,9 +27,6 @@ namespace argos {
           STOP
       };
 
-      /****************************************/
-      /* Sensors and Actuators         */
-      /****************************************/
       CCI_PiPuckDifferentialDriveActuator* m_pcWheels;
       CCI_PiPuckColorLEDsActuator* m_pcColoredLEDs;
       CCI_ColoredBlobOmnidirectionalCameraSensor* m_pcCamera;
@@ -37,9 +34,7 @@ namespace argos {
       CCI_PiPuckSystemSensor* m_pcSystem;
       CCI_PositioningSensor* m_pcPositioning;
 
-      /****************************************/
-      /* Navigation Data           */
-      /****************************************/
+      // variables
       EState   m_eState;
       CVector3 m_cTargetPosition;
       CVector3 m_cStartPosition;
@@ -53,16 +48,12 @@ namespace argos {
       bool     m_bLeftHitPoint;
       int      m_nLeaveTimer;
 
-      /****************************************/
-      /* State Functions           */
-      /****************************************/
+      // state functions
       void GoToGoal();
       void FollowObstacle();
       void GoToClosestPoint();
 
-      /****************************************/
-      /* Helper Functions           */
-      /****************************************/
+      // helper functions
       bool IsObstacleDetected();
       bool IsTargetReached();
       Real DistanceToGoal(const CVector3& pos);

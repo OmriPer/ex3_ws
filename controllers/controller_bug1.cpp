@@ -6,7 +6,6 @@ namespace argos {
    /****************************************/
 
    void ControllerBug1::Init(TConfigurationNode& t_tree) {
-      /* אקטיואטורים וסנסורים */
       m_pcWheels = GetActuator<CCI_PiPuckDifferentialDriveActuator>("pipuck_differential_drive");
       m_pcColoredLEDs = GetActuator<CCI_PiPuckColorLEDsActuator>("pipuck_leds");
       m_pcSystem = GetSensor<CCI_PiPuckSystemSensor>("pipuck_system");
@@ -16,14 +15,13 @@ namespace argos {
       m_pcPositioning = GetSensor<CCI_PositioningSensor>("positioning");
       m_pcPositioning->Enable();
 
-      /* קריאת מטרה */
       TConfigurationNode& tTargetNode = GetNode(t_tree, "target_position");
       Real targetX, targetY;
       GetNodeAttribute(tTargetNode, "x", targetX);
       GetNodeAttribute(tTargetNode, "y", targetY);
       m_cTargetPosition.Set(targetX, targetY, 0.0);
 
-      /* אתחול משתנים */
+      // initialize variables
       m_fThresholdDistance = 0.05;
       m_fClosestDistanceToGoal = 1e9;
       m_nLeaveTimer = 0;
@@ -31,13 +29,12 @@ namespace argos {
       m_bLeftHitPoint = false;
       m_eState = STATE_GO_TO_GOAL;
 
-      LOG << "INIT DONE - Bug1 Classic Ready" << std::endl;
    }
 
    /****************************************/
 
    void ControllerBug1::ControlStep() {
-      /* עדכון טיימר בכל צעד */
+      // update timer when switching states
       if(m_nLeaveTimer > 0) {
          m_nLeaveTimer--;
       }
@@ -58,66 +55,72 @@ namespace argos {
       }
    }
 
-   /****************************************/
 
-   void ControllerBug1::GoToGoal() {
-      if(IsTargetReached()) {
-         m_eState = STOP;
-         return;
-      }
-
-      /* אם יש מכשול והטיימר נגמר - כנס למצב עקיפה */
-      if(IsObstacleDetected() && m_nLeaveTimer <= 0) {
-         m_bLeftHitPoint = false;
-         m_cObstacleHitPoint = m_pcPositioning->GetReading().Position;
-         m_cClosestPointToGoal = m_cObstacleHitPoint;
-         m_fClosestDistanceToGoal = DistanceToGoal(m_cObstacleHitPoint);
-
-         LOG << "Hit Obstacle! Starting full loop..." << std::endl;
-         m_eState = STATE_FOLLOW_OBSTACLE;
-         return;
-      }
-
-      MoveTowardsTarget();
+// go to goal state
+void ControllerBug1::GoToGoal() {
+   // if target reached, stop
+   if(IsTargetReached()) {
+      m_eState = STOP;
+      return;
    }
 
-   void ControllerBug1::FollowObstacle() {
-      CVector3 currentPos = m_pcPositioning->GetReading().Position;
-      Real distToGoal = DistanceToGoal(currentPos);
+   if(IsObstacleDetected() && m_nLeaveTimer <= 0) {
+      // initialize obstacle following variables for new obstacle
+      m_bLeftHitPoint = false;               
+      m_cObstacleHitPoint = m_pcPositioning->GetReading().Position;
+      m_cClosestPointToGoal = m_cObstacleHitPoint;
+      m_fClosestDistanceToGoal = DistanceToGoal(m_cObstacleHitPoint);
+      
+      // reset previous closest distance
+      m_fPrevDistToClosest = 1e9; 
 
-      /* שמירת הנקודה הכי קרובה */
-      if(distToGoal < m_fClosestDistanceToGoal) {
-         m_fClosestDistanceToGoal = distToGoal;
-         m_cClosestPointToGoal = currentPos;
-      }
-
-      Real distFromHit = (currentPos - m_cObstacleHitPoint).Length();
-
-      /* לוגיקת סיום הקפה מבוססת מרחק */
-      if(!m_bLeftHitPoint) {
-         if(distFromHit > 0.15) { // התרחקנו מההתחלה
-            m_bLeftHitPoint = true;
-         }
-      } 
-      else {
-         if(distFromHit < 0.08) { // חזרנו להתחלה
-            LOG << "Full loop complete! Going to closest point..." << std::endl;
-            m_eState = STATE_GO_TO_CLOSEST_POINT;
-            return;
-         }
-      }
-
-      FollowWallOnly();
+      m_eState = STATE_FOLLOW_OBSTACLE;
+      return;
    }
 
+   // move towards goal
+   MoveTowardsTarget();
+}
+
+   // follow obstacle state
+void ControllerBug1::FollowObstacle() {
+   CVector3 currentPos = m_pcPositioning->GetReading().Position;
+   Real distToGoal = DistanceToGoal(currentPos);
+
+   if(distToGoal < m_fClosestDistanceToGoal) {
+      m_fClosestDistanceToGoal = distToGoal;
+      m_cClosestPointToGoal = currentPos;
+   }
+
+   Real distFromHit = (currentPos - m_cObstacleHitPoint).Length();
+
+   if(!m_bLeftHitPoint) {
+      if(distFromHit > 0.10) { 
+         m_bLeftHitPoint = true;
+         LOG << "Robot left hit point area of the current obstacle." << std::endl;
+      }
+   } 
+   else {
+      if(distFromHit < 0.1) { 
+          LOG << "Full loop complete on current obstacle!" << std::endl;
+          m_eState = STATE_GO_TO_CLOSEST_POINT;
+          return;
+      }
+   }
+
+   FollowWallOnly();
+}
+
+   // go to closest point state
    void ControllerBug1::GoToClosestPoint() {
+      // set current position with positioning sensor
       CVector3 currentPos = m_pcPositioning->GetReading().Position;
+      // variable for distance to closest point
       Real d = (currentPos - m_cClosestPointToGoal).Length();
-
-      /* אם הגענו לנקודת היציאה - צא למטרה */
+   
+      // if reached closest point to goal, switch to go to goal state
       if(d < 0.08) {
-         LOG << "At best exit point! Goal bound." << std::endl;
-         m_nLeaveTimer = 150; // זמן חסד להתרחקות מהקיר
+         m_nLeaveTimer = 150; // timer to avoid immediate re-detection of the obstacle
          m_eState = STATE_GO_TO_GOAL;
          return;
       }
@@ -125,31 +128,31 @@ namespace argos {
       FollowWallOnly();
    }
 
+   // follow wall helper function
    void ControllerBug1::FollowWallOnly() {
       if(ObstacleInFront()) {
-         m_pcWheels->SetLinearVelocity(-0.05, 0.05); // פנייה שמאלה
+         m_pcWheels->SetLinearVelocity(-0.05, 0.05); // turn left
       }
       else if(ObstacleOnLeft()) {
-         m_pcWheels->SetLinearVelocity(0.1, 0.1);    // נסיעה ישר
+         m_pcWheels->SetLinearVelocity(0.1, 0.1);    // drive forward
       }
       else if(ObstacleOnRight()) {
-         m_pcWheels->SetLinearVelocity(0.05, 0.02);  // תיקון ימינה
+         m_pcWheels->SetLinearVelocity(0.05, 0.02);  // turn right
       }
       else {
-         m_pcWheels->SetLinearVelocity(0.03, 0.06);  // חיפוש קיר בקשת
+         m_pcWheels->SetLinearVelocity(0.03, 0.06);  // look for wall
       }
    }
 
-   /****************************************/
-   /* Helpers */
-   /****************************************/
-
+   // obstacle detection helper function
    bool ControllerBug1::IsObstacleDetected() {
       return ObstacleInFront();
    }
 
+   // obstacle position helper functions
    bool ControllerBug1::ObstacleInFront() {
       bool detected = false;
+      // check front sensors (0 and 7)
       m_pcRangefinders->Visit([&detected](const auto& sensor) {
          if((sensor.Label == 0 || sensor.Label == 7) && 
             sensor.Proximity < std::get<3>(sensor.Configuration))
@@ -158,6 +161,7 @@ namespace argos {
       return detected;
    }
 
+   // obstacle position helper functions
    bool ControllerBug1::ObstacleOnLeft() {
       bool detected = false;
       m_pcRangefinders->Visit([&detected](const auto& sensor) {
@@ -168,6 +172,7 @@ namespace argos {
       return detected;
    }
 
+   // obstacle position helper functions
    bool ControllerBug1::ObstacleOnRight() {
       bool detected = false;
       m_pcRangefinders->Visit([&detected](const auto& sensor) {
@@ -178,6 +183,7 @@ namespace argos {
       return detected;
    }
 
+   // target reached helper function
    bool ControllerBug1::IsTargetReached() {
       const auto& blobs = m_pcCamera->GetReadings();
       for(const auto& blob : blobs.BlobList) {
@@ -186,14 +192,17 @@ namespace argos {
       return false;
    }
 
+   // distance to goal helper function
    Real ControllerBug1::DistanceToGoal(const CVector3& pos) {
       return (pos - m_cTargetPosition).Length();
    }
 
+   // move towards target helper function
    void ControllerBug1::MoveTowardsTarget() {
       MoveTowardsPoint(m_cTargetPosition);
    }
 
+   // move towards point helper function
    void ControllerBug1::MoveTowardsPoint(const CVector3& point) {
       CRadians cZ, cY, cX;
       m_pcPositioning->GetReading().Orientation.ToEulerAngles(cZ, cY, cX);
